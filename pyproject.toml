@@ -3,11 +3,11 @@ name = "poma-integrations"
 version = "0.1.0"
 description = "POMA Integrations for Langchain and LlamaIndex"
 authors = [{ name = "TIGON S.L.U.", email = "info@poma.science" }]
-license = { text = "MPL-2.0" }
+license = "MPL-2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "poma_chunker @ https://github.com/poma-science/poma-chunker/releases/download/latest/poma_chunker-latest.whl",
+    "poma-chunker>=0.1.0",
     "doc2poma",
     "poma-senter",
     "langchain==0.3.25",
