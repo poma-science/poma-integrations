@@ -1,6 +1,6 @@
 [project]
 name = "poma-integrations"
-version = "0.1.0"
+dynamic = ["version"]
 description = "POMA Integrations for Langchain and LlamaIndex"
 authors = [{ name = "TIGON S.L.U.", email = "info@poma.science" }]
 license = "MPL-2.0"
@@ -25,3 +25,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "poma_integrations.version.__version__"}
