@@ -6,6 +6,7 @@ POMA helpers for Llama-Index
 • PomaChunksetNodeParser  – NodeParser
 • PomaCheatsheetPostProcessor – BaseNodePostprocessor
 """
+
 from __future__ import annotations
 import json, typing as t, pathlib
 import zipfile
@@ -13,7 +14,7 @@ from llama_index.core.schema import NodeWithScore, Document as LIDoc, TextNode
 from llama_index.core.readers.base import BaseReader
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
-import doc2poma, poma_chunker
+import doc2poma
 from poma_senter import clean_and_segment_text
 from pydantic import PrivateAttr
 
@@ -24,28 +25,30 @@ __all__ = [
     "PomaCheatsheetPostProcessor",
 ]
 
+
 # ---------------------------------------------------------------------- #
 #  READER                                                                #
 # ---------------------------------------------------------------------- #
 class Doc2PomaReader(BaseReader):
     """Outputs one Llama-Index Document with sentence-aligned markdown."""
+
     def __init__(self, cfg: dict):
         self.cfg = cfg
 
     def load_data(self, file_path: str) -> list[LIDoc]:
         archive_result = doc2poma.convert(file_path, base_url=None, config=self.cfg)
-        
+
         # Handle both string and tuple return values for backward compatibility
         if isinstance(archive_result, tuple):
             archive_path, cost = archive_result
         else:
             archive_path = archive_result
             cost = 0
-            
+
         print(f"Converted {file_path} to {archive_path} (cost: ${cost})")
 
         archive_path = pathlib.Path(archive_path).with_suffix(".poma")
-        
+
         # Convert PosixPath to string if needed
         if isinstance(archive_path, pathlib.Path):
             archive_path_str = str(archive_path)
@@ -63,13 +66,16 @@ class Doc2PomaReader(BaseReader):
 # ---------------------------------------------------------------------- #
 class PomaSentenceNodeParser(SimpleNodeParser):
     """One TextNode per sentence (robust segmentation)."""
+
     def get_nodes_from_documents(self, docs: list[LIDoc], **_) -> list[TextNode]:
         out = []
         for d in docs:
             lines = clean_and_segment_text(d.text).splitlines()
             for i, line in enumerate(lines):
                 if line.strip():
-                    out.append(TextNode(text=line.strip(), metadata={"sentence_idx": i}))
+                    out.append(
+                        TextNode(text=line.strip(), metadata={"sentence_idx": i})
+                    )
         return out
 
 
@@ -82,22 +88,26 @@ class PomaChunksetNodeParser(SimpleNodeParser):
         super().__init__()
         self._cfg = cfg
 
-    def get_nodes_from_documents(self, docs: list[LIDoc], **_) -> tuple[list[TextNode], list[dict]]:
+    def get_nodes_from_documents(
+        self, docs: list[LIDoc], **_
+    ) -> tuple[list[TextNode], list[dict]]:
+        import poma_chunker
+
         if len(docs) != 1:
             raise ValueError("Pass the markdown Document only")
         md_doc = docs[0]
         archive = md_doc.metadata["poma_archive"]
-        
+
         # Handle both string and tuple return values for backward compatibility
         if isinstance(archive, tuple):
             archive_path, _ = archive
         else:
             archive_path = archive
-        
+
         # Convert PosixPath to string if needed
         if isinstance(archive_path, pathlib.Path):
             archive_path = str(archive_path)
-            
+
         res = poma_chunker.process(archive_path, self._cfg)
         doc_id = pathlib.Path(archive_path).stem
 
@@ -120,18 +130,19 @@ class PomaChunksetNodeParser(SimpleNodeParser):
 # ---------------------------------------------------------------------- #
 ChunkFetcher = t.Callable[[str, t.Sequence[int]], t.List[dict]]
 
+
 class PomaCheatsheetPostProcessor(BaseNodePostprocessor):
     """
     Collapse top-k chunkset nodes into a single cheatsheet node.
 
     Needs a `chunk_fetcher` callable (same signature as LangChain retriever).
     """
+
     _fetch: ChunkFetcher = PrivateAttr()
 
     def __init__(self, chunk_fetcher: ChunkFetcher):
         super().__init__()
         self._fetch = chunk_fetcher
-
 
     def _postprocess_nodes(
         self,
@@ -139,6 +150,8 @@ class PomaCheatsheetPostProcessor(BaseNodePostprocessor):
         query_bundle=None,
         **_,
     ) -> list[TextNode]:
+        import poma_chunker
+
         if not nodes:
             return []
 
