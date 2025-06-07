@@ -6,15 +6,16 @@ POMA helpers for LangChain
 • PomaChunksetSplitter   – TextSplitter → one chunkset  = one Document
 • PomaCheatsheetRetriever– BaseRetriever→ emits ONE cheatsheet Document
 """
+
 from __future__ import annotations
-import json, typing as t, pathlib, sqlite3
+import json, typing as t, pathlib
 import zipfile
 from pydantic import PrivateAttr
 from langchain.schema import Document
 from langchain.document_loaders.base import BaseLoader
 from langchain.text_splitter import TextSplitter
 from langchain.schema.retriever import BaseRetriever
-import doc2poma, poma_chunker
+import doc2poma
 from poma_senter import clean_and_segment_text
 
 __all__ = [
@@ -24,24 +25,26 @@ __all__ = [
     "PomaCheatsheetRetriever",
 ]
 
+
 # ---------------------------------------------------------------------- #
 #  LOADER                                                                #
 # ---------------------------------------------------------------------- #
 class Doc2PomaLoader(BaseLoader):
     """Convert any file to markdown – one sentence per line."""
+
     def __init__(self, cfg: dict):
         self.cfg = cfg
 
     def load(self, file_path: str) -> list[Document]:
         archive_result = doc2poma.convert(file_path, base_url=None, config=self.cfg)
-        
+
         # Handle both string and tuple return values for backward compatibility
         if isinstance(archive_result, tuple):
             archive_path, cost = archive_result
         else:
             archive_path = archive_result
             cost = 0
-            
+
         print(f"Converted {file_path} to {archive_path} (cost: ${cost})")
 
         archive_path = pathlib.Path(archive_path).with_suffix(".poma")
@@ -57,6 +60,7 @@ class Doc2PomaLoader(BaseLoader):
 # ---------------------------------------------------------------------- #
 class PomaSentenceSplitter(TextSplitter):
     """Robust sentence segmentation (one Document per sentence)."""
+
     def split_documents(self, docs: list[Document]) -> list[Document]:
         out = []
         for doc in docs:
@@ -74,28 +78,36 @@ class PomaSentenceSplitter(TextSplitter):
     def split_text(self, text: str) -> list[str]:
         raise NotImplementedError("PomaSentenceSplitter supports split_documents()")
 
+
 class PomaChunksetSplitter(TextSplitter):
     """
     Structural splitter – one Document per POMA chunkset.
 
     Returns (docs, raw_chunks) so caller can persist raw chunks.
     """
+
     def __init__(self, cfg: dict):
         super().__init__(chunk_size=10**9)
         self.cfg = cfg
 
-    def split_documents(self, docs: list[Document]) -> tuple[list[Document], list[dict]]:
+    def split_documents(
+        self, docs: list[Document]
+    ) -> tuple[list[Document], list[dict]]:
+        import poma_chunker
+
         if len(docs) != 1:
-            raise ValueError("Pass a single Document (the markdown) to ChunksetSplitter")
+            raise ValueError(
+                "Pass a single Document (the markdown) to ChunksetSplitter"
+            )
         md_doc = docs[0]
         archive = md_doc.metadata["poma_archive"]
-        
+
         # Convert PosixPath to string if needed
         if isinstance(archive, pathlib.Path):
             archive_path = str(archive)
         else:
             archive_path = archive
-            
+
         res = poma_chunker.process(archive_path, self.cfg)
         doc_id = pathlib.Path(archive_path).stem
 
@@ -111,7 +123,7 @@ class PomaChunksetSplitter(TextSplitter):
             for cs in res["chunksets"]
         ]
         return docs_out, res["chunks"]  # second element for persistence
-    
+
     def split_text(self, text: str) -> list[str]:
         raise NotImplementedError("PomaChunksetSplitter supports split_documents()")
 
@@ -121,12 +133,14 @@ class PomaChunksetSplitter(TextSplitter):
 # ---------------------------------------------------------------------- #
 ChunkFetcher = t.Callable[[str, t.Sequence[int]], t.List[dict]]
 
+
 class PomaCheatsheetRetriever(BaseRetriever):
     """
     Wrap any VectorStore. Needs a callback that returns raw chunk dicts.
 
         fetch(doc_id, list_of_ids) -> list[{chunk_index, depth, content}]
     """
+
     _vs: t.Any = PrivateAttr()
     _fetch: t.Any = PrivateAttr()
     _k: int = PrivateAttr(default=4)
@@ -137,8 +151,9 @@ class PomaCheatsheetRetriever(BaseRetriever):
         self._fetch = chunks_store
         self._k = k
 
-
     def _get_relevant_documents(self, query: str):
+        import poma_chunker
+
         hits = self._vs.similarity_search(query, k=self._k)
         if not hits:
             return []
@@ -159,11 +174,13 @@ class PomaCheatsheetRetriever(BaseRetriever):
             raw_chunks = self._fetch(doc_id)
             enriched = poma_chunker.get_relevant_chunks(chunk_ids, raw_chunks)
             cheat = poma_chunker.generate_cheatsheet(enriched)
-            result_documents.append(Document(page_content=cheat, metadata={"source": "poma"}))
+            result_documents.append(
+                Document(page_content=cheat, metadata={"source": "poma"})
+            )
 
         return result_documents
 
-
-
     async def _aget_relevant_documents(self, query: str):
-        raise NotImplementedError("Async path not implemented for PomaCheatsheetRetriever.")
+        raise NotImplementedError(
+            "Async path not implemented for PomaCheatsheetRetriever."
+        )
