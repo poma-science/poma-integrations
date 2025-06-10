@@ -18,6 +18,8 @@ Import what you need:
     )
 """
 
+import poma_chunker
+
 from .langchain_poma import (
     Doc2PomaLoader,
     PomaSentenceSplitter,

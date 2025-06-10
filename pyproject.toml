@@ -7,13 +7,13 @@ license = "MPL-2.0"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "poma-chunker>=0.1.0",
+    "poma-chunker",
     "doc2poma",
     "poma-senter",
-    "langchain==0.3.25",
+    "langchain",
     "langchain-community",
-    "llama_index==0.12.37",
-    "pydantic==2.11.5"
+    "llama_index",
+    "pydantic"
 ]
 
 [build-system]

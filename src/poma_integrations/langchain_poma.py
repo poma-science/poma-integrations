@@ -3,20 +3,22 @@ POMA helpers for LangChain
 ──────────────────────────
 • Doc2PomaLoader         – BaseLoader  → sentence-aligned markdown
 • PomaSentenceSplitter   – TextSplitter → one sentence = one Document
-• PomaChunksetSplitter   – TextSplitter → one chunkset  = one Document
-• PomaCheatsheetRetriever– BaseRetriever→ emits ONE cheatsheet Document
+• PomaChunksetSplitter   – TextSplitter → one chunkset = one Document
+• PomaCheatsheetRetriever– BaseRetriever→ one cheatsheet = one Document
 """
 
-from __future__ import annotations
-import json, typing as t, pathlib
+import os
+import pathlib
 import zipfile
+from typing import Any
 from pydantic import PrivateAttr
 from langchain.schema import Document
 from langchain.document_loaders.base import BaseLoader
-from langchain.text_splitter import TextSplitter
+from langchain_text_splitters import TextSplitter
 from langchain.schema.retriever import BaseRetriever
+import poma_senter
 import doc2poma
-from poma_senter import clean_and_segment_text
+
 
 __all__ = [
     "Doc2PomaLoader",
@@ -26,51 +28,49 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------- #
-#  LOADER                                                                #
-# ---------------------------------------------------------------------- #
 class Doc2PomaLoader(BaseLoader):
-    """Convert any file to markdown – one sentence per line."""
+    """
+    Loads a document by converting it to `.poma` format using the `doc2poma` pipeline,
+    and returns it as a single `Langchain Document`.
+    """
 
-    def __init__(self, cfg: dict):
-        self.cfg = cfg
+    def __init__(self, config: dict):
+        self.config = config
 
     def load(self, file_path: str) -> list[Document]:
-        archive_result = doc2poma.convert(file_path, base_url=None, config=self.cfg)
+        archive_path, costs = doc2poma.convert(
+            file_path, config=self.config, base_url=None
+        )
+        print(f"Converted {file_path} to {archive_path} – for USD {costs:.5f}")
 
-        # Handle both string and tuple return values for backward compatibility
-        if isinstance(archive_result, tuple):
-            archive_path, cost = archive_result
-        else:
-            archive_path = archive_result
-            cost = 0
+        # load markdown, ensure .poma extension
+        root, _ = os.path.splitext(archive_path)
+        poma_file_path = root + ".poma"
+        with zipfile.ZipFile(poma_file_path, "r") as zipf:
+            with zipf.open("content.md") as file:
+                md = file.read().decode("utf-8")
 
-        print(f"Converted {file_path} to {archive_path} (cost: ${cost})")
-
-        archive_path = pathlib.Path(archive_path).with_suffix(".poma")
-
-        with zipfile.ZipFile(archive_path, "r") as zipf:
-            with zipf.open("content.md") as f:
-                md = f.read().decode("utf-8")
         return [Document(page_content=md, metadata={"poma_archive": archive_path})]
 
 
-# ---------------------------------------------------------------------- #
-#  SPLITTERS                                                             #
-# ---------------------------------------------------------------------- #
 class PomaSentenceSplitter(TextSplitter):
-    """Robust sentence segmentation (one Document per sentence)."""
+    """
+    Splits input documents into individual sentences using a robust sentence segmenter.
+    Each non-empty sentence becomes a new `Document`.
+
+    Note: Only `split_documents()` is implemented. `split_text()` is not supported.
+    """
 
     def split_documents(self, docs: list[Document]) -> list[Document]:
         out = []
         for doc in docs:
-            lines = clean_and_segment_text(doc.page_content).splitlines()
+            lines = poma_senter.clean_and_segment_text(doc.page_content).splitlines()
             for i, line in enumerate(lines):
                 if line.strip():
                     out.append(
                         Document(
                             page_content=line.strip(),
-                            metadata={**doc.metadata, "sentence_idx": i},
+                            metadata={"sentence_idx": i},
                         )
                     )
         return out
@@ -81,101 +81,96 @@ class PomaSentenceSplitter(TextSplitter):
 
 class PomaChunksetSplitter(TextSplitter):
     """
-    Structural splitter – one Document per POMA chunkset.
+    Splits a `.poma` archive into high-level content chunksets using the `poma_chunker` pipeline.
+    Each non-empty sentence becomes a new `Document`.
 
-    Returns (docs, raw_chunks) so caller can persist raw chunks.
+    This splitter expects exactly one input document.
+
+    Returns (doc_id, output_docs, chunks, chunksets) so caller can persist the raw data.
     """
 
-    def __init__(self, cfg: dict):
+    def __init__(self, config: dict):
         super().__init__(chunk_size=10**9)
-        self.cfg = cfg
+        self.config = config
 
     def split_documents(
         self, docs: list[Document]
-    ) -> tuple[list[Document], list[dict]]:
-        import poma_chunker
+    ) -> tuple[str, list[Document], list[dict], list[dict]]:
+        from poma_chunker import process
 
         if len(docs) != 1:
-            raise ValueError(
-                "Pass a single Document (the markdown) to ChunksetSplitter"
-            )
-        md_doc = docs[0]
-        archive = md_doc.metadata["poma_archive"]
-
-        # Convert PosixPath to string if needed
-        if isinstance(archive, pathlib.Path):
-            archive_path = str(archive)
-        else:
-            archive_path = archive
-
-        res = poma_chunker.process(archive_path, self.cfg)
-        doc_id = pathlib.Path(archive_path).stem
-
+            raise ValueError(f"Expected exactly one document, got {len(docs)}")
+        poma_doc = docs[0]
+        archive_path = poma_doc.metadata["poma_archive"]
+        result = process(archive_path, self.config)
+        chunks, chunksets = result["chunks"], result["chunksets"]
+        poma_doc_id = pathlib.Path(archive_path).stem
         docs_out = [
             Document(
                 page_content=cs["contents"],
                 metadata={
-                    "doc_id": doc_id,
-                    "chunk_ids": json.dumps(cs["chunks"]),
-                    "chunkset_id": cs["chunkset_index"],
+                    "doc_id": poma_doc_id,
+                    "chunkset_index": cs["chunkset_index"],
                 },
             )
-            for cs in res["chunksets"]
+            for cs in chunksets
         ]
-        return docs_out, res["chunks"]  # second element for persistence
+        return poma_doc_id, docs_out, chunks, chunksets
 
     def split_text(self, text: str) -> list[str]:
         raise NotImplementedError("PomaChunksetSplitter supports split_documents()")
 
 
-# ---------------------------------------------------------------------- #
-#  RETRIEVER                                                             #
-# ---------------------------------------------------------------------- #
-ChunkFetcher = t.Callable[[str, t.Sequence[int]], t.List[dict]]
-
-
 class PomaCheatsheetRetriever(BaseRetriever):
     """
-    Wrap any VectorStore. Needs a callback that returns raw chunk dicts.
+    Retrieves relevant chunksets based on a given query from a vector store.
 
-        fetch(doc_id, list_of_ids) -> list[{chunk_index, depth, content}]
+    Collapse top-k chunkset data into a single cheatsheet Document (per doc_id).
     """
 
-    _vs: t.Any = PrivateAttr()
-    _fetch: t.Any = PrivateAttr()
-    _k: int = PrivateAttr(default=4)
+    _vector_store: Any = PrivateAttr()
+    _fetch_chunks: Any = PrivateAttr()
+    _fetch_chunkset: Any = PrivateAttr()
+    _top_k: int = PrivateAttr()
 
-    def __init__(self, vectorstore, chunks_store, k=4):
+    def __init__(self, vectorstore, chunks_store, chunkset_store, top_k):
         super().__init__()
-        self._vs = vectorstore
-        self._fetch = chunks_store
-        self._k = k
+        self._vector_store = vectorstore
+        self._fetch_chunks = chunks_store
+        self._fetch_chunkset = chunkset_store
+        self._top_k = top_k
 
-    def _get_relevant_documents(self, query: str):
-        import poma_chunker
+    def _get_relevant_documents(self, query: str) -> list[Document]:
+        from poma_chunker import get_relevant_chunks, generate_cheatsheet
 
-        hits = self._vs.similarity_search(query, k=self._k)
-        if not hits:
+        vector_search_results_and_scores = (
+            self._vector_store.similarity_search_with_score(query, k=self._top_k)
+        )
+        if not vector_search_results_and_scores:
             return []
 
-        # Group hits by doc_id using a regular dictionary
-        doc_id_to_chunk_ids = {}
-        for h in hits:
-            doc_id = h.metadata["doc_id"]
-            chunk_ids = json.loads(h.metadata["chunk_ids"])
-            if doc_id not in doc_id_to_chunk_ids:
-                doc_id_to_chunk_ids[doc_id] = []
-            doc_id_to_chunk_ids[doc_id].extend(chunk_ids)
+        search_results_per_doc_id = {}
+        for search_result, score in vector_search_results_and_scores:
+            doc_id = search_result.metadata["doc_id"]
+            if doc_id not in search_results_per_doc_id:
+                search_results_per_doc_id[doc_id] = []
+            search_results_per_doc_id[doc_id].append(search_result)
 
         result_documents = []
+        for doc_id, search_results in search_results_per_doc_id.items():
+            doc_chunks = self._fetch_chunks(doc_id)
+            doc_chunk_ids = []
+            for search_result in search_results:
+                chunkset_index = search_result.metadata["chunkset_index"]
+                chunkset = self._fetch_chunkset(doc_id, chunkset_index)
+                doc_chunk_ids.extend(chunkset["chunks"])
 
-        # Process each group of hits by doc_id
-        for doc_id, chunk_ids in doc_id_to_chunk_ids.items():
-            raw_chunks = self._fetch(doc_id)
-            enriched = poma_chunker.get_relevant_chunks(chunk_ids, raw_chunks)
-            cheat = poma_chunker.generate_cheatsheet(enriched)
+            all_relevant_chunks = get_relevant_chunks(doc_chunk_ids, doc_chunks)
+            cheatsheet = generate_cheatsheet(all_relevant_chunks)
+            print("── Cheatsheet ──\n", cheatsheet or "(empty)", "\n──────┘\n")
+
             result_documents.append(
-                Document(page_content=cheat, metadata={"source": "poma"})
+                Document(page_content=cheatsheet, metadata={"source": "poma"})
             )
 
         return result_documents
